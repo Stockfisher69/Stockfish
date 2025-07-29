@@ -37,6 +37,22 @@
 
 namespace Stockfish {
 
+// Get phase-adjusted weights for PSQT and positional components
+std::pair<int, int> get_phase_weights(const Position& pos) {
+    // Calculate game phase (0 = endgame, 24 = opening)
+    int phase = pos.non_pawn_material() / 130;
+    phase = std::clamp(phase, 0, 24);
+    
+    // In endgames, piece placement becomes more critical
+    int psqtAdj = (24 - phase) / 8;
+    int posAdj = -psqtAdj / 2;
+    
+    int psqtWeight = 125 + psqtAdj;
+    int posWeight = 131 + posAdj;
+    
+    return {psqtWeight, posWeight};
+}
+
 // Returns a static, purely materialistic evaluation of the position from
 // the point of view of the side to move. It can be divided by PawnValue to get
 // an approximation of the material advantage on the board in terms of pawns.
@@ -62,14 +78,16 @@ Value Eval::evaluate(const Eval::NNUE::Networks&    networks,
     auto [psqt, positional] = smallNet ? networks.small.evaluate(pos, accumulators, &caches.small)
                                        : networks.big.evaluate(pos, accumulators, &caches.big);
 
-    Value nnue = (125 * psqt + 131 * positional) / 128;
+    auto [psqtWeight, positionalWeight] = get_phase_weights(pos);
+    Value nnue = (psqtWeight * psqt + positionalWeight * positional) / 128;
 
     // Re-evaluate the position when higher eval accuracy is worth the time spent
     if (smallNet && (std::abs(nnue) < 236))
     {
         std::tie(psqt, positional) = networks.big.evaluate(pos, accumulators, &caches.big);
-        nnue                       = (125 * psqt + 131 * positional) / 128;
-        smallNet                   = false;
+        // Phase doesn't change, so we keep the same weights
+        nnue = (psqtWeight * psqt + positionalWeight * positional) / 128;
+        smallNet = false;
     }
 
     // Blend optimism and eval with nnue complexity
