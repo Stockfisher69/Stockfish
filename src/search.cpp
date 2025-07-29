@@ -1044,6 +1044,13 @@ moves_loop:  // When in check, search starts here
                     Value futilityValue = ss->staticEval + 225 + 220 * lmrDepth
                                         + 275 * (move.to_sq() == prevSq) + PieceValue[capturedPiece]
                                         + 131 * captHist / 1024;
+    
+                    // Only apply material adjustment for non-recaptures
+                    if (move.to_sq() != prevSq) {
+                        Value materialImbalance = pos.non_pawn_material(us) - pos.non_pawn_material(~us);
+                        futilityValue += std::clamp(materialImbalance >> 6, -48, 52);
+                    }
+    
                     if (futilityValue <= alpha)
                         continue;
                 }
