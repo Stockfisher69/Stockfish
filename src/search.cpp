@@ -1075,6 +1075,7 @@ moves_loop:  // When in check, search starts here
                     continue;
 
                 history += 71 * mainHistory[us][move.from_to()] / 32;
+                history += (capture == ttCapture) * 45; // Small bonus for matching move type
 
                 lmrDepth += history / 3233;
 
