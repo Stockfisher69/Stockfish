@@ -46,7 +46,67 @@ int Eval::simple_eval(const Position& pos) {
          + (pos.non_pawn_material(c) - pos.non_pawn_material(~c));
 }
 
-bool Eval::use_smallnet(const Position& pos) { return std::abs(simple_eval(pos)) > 962; }
+bool Eval::use_smallnet(const Position& pos) { 
+    return std::abs(simple_eval(pos)) > 962; 
+}
+
+// Dynamic coefficient calculation using weighted influence factors
+// This prevents cumulative penalization and maintains evaluation stability
+std::pair<int, int> get_dynamic_coeffs(const Position& pos, int psqt, int positional) {
+    // Base coefficients
+    const int psqt_base = 125;
+    const int pos_base = 131;
+    
+    // Start with neutral influence
+    float psqt_influence = 1.0f;
+    float pos_influence = 1.0f;
+    
+    // Game phase influence
+    int total_pieces = popcount(pos.pieces() ^ pos.pieces(PAWN));
+    if (total_pieces >= 20) {
+        // Opening: favor PSQT for tactics and development
+        psqt_influence *= 1.032f;  // +3.2%
+        pos_influence *= 0.985f;   // -1.5%
+    } else if (total_pieces <= 10) {
+        // Endgame: favor positional for precision
+        psqt_influence *= 0.976f;  // -2.4%
+        pos_influence *= 1.031f;   // +3.1%
+    }
+    
+    // NNUE component disagreement influence
+    int nnue_diff = std::abs(psqt - positional);
+    if (nnue_diff > 200) {
+        // When components disagree, favor the more conservative (smaller magnitude)
+        if (std::abs(psqt) > std::abs(positional)) {
+            psqt_influence *= 0.984f;   // -1.6%
+            pos_influence *= 1.008f;    // +0.8%
+        } else {
+            psqt_influence *= 1.008f;   // +0.8%
+            pos_influence *= 0.984f;    // -1.6%
+        }
+    }
+    
+    // Material imbalance influence
+    int material_diff = std::abs(pos.non_pawn_material(WHITE) - pos.non_pawn_material(BLACK));
+    if (material_diff > 300) {
+        // Imbalanced positions: slightly favor PSQT for tactical evaluation
+        psqt_influence *= 1.016f;   // +1.6%
+        pos_influence *= 0.992f;    // -0.8%
+    }
+    
+    // Rule50 influence - approaching draw, favor positional accuracy
+    if (pos.rule50_count() > 40) {
+        float rule50_factor = std::min(0.02f, (pos.rule50_count() - 40) * 0.002f);
+        psqt_influence *= (1.0f - rule50_factor);
+        pos_influence *= (1.0f + rule50_factor);
+    }
+    
+    // Apply influences and clamp to safe bounds
+    int psqt_coeff = std::clamp(int(psqt_base * psqt_influence), 118, 132);
+    int pos_coeff = std::clamp(int(pos_base * pos_influence), 124, 138);
+    
+    return {psqt_coeff, pos_coeff};
+}
 
 // Evaluate is the evaluator for the outer world. It returns a static evaluation
 // of the position from the point of view of the side to move.
@@ -62,14 +122,18 @@ Value Eval::evaluate(const Eval::NNUE::Networks&    networks,
     auto [psqt, positional] = smallNet ? networks.small.evaluate(pos, accumulators, &caches.small)
                                        : networks.big.evaluate(pos, accumulators, &caches.big);
 
-    Value nnue = (125 * psqt + 131 * positional) / 128;
+    // Apply dynamic coefficient adjustment
+    auto [psqt_coeff, pos_coeff] = get_dynamic_coeffs(pos, psqt, positional);
+    Value nnue = (psqt_coeff * psqt + pos_coeff * positional) / 128;
 
     // Re-evaluate the position when higher eval accuracy is worth the time spent
     if (smallNet && (std::abs(nnue) < 236))
     {
         std::tie(psqt, positional) = networks.big.evaluate(pos, accumulators, &caches.big);
-        nnue                       = (125 * psqt + 131 * positional) / 128;
-        smallNet                   = false;
+        // Recalculate coefficients for big network evaluation
+        auto [big_psqt_coeff, big_pos_coeff] = get_dynamic_coeffs(pos, psqt, positional);
+        nnue = (big_psqt_coeff * psqt + big_pos_coeff * positional) / 128;
+        smallNet = false;
     }
 
     // Blend optimism and eval with nnue complexity
@@ -108,6 +172,13 @@ std::string Eval::trace(Position& pos, const Eval::NNUE::Networks& networks) {
     ss << std::showpoint << std::showpos << std::fixed << std::setprecision(2) << std::setw(15);
 
     auto [psqt, positional] = networks.big.evaluate(pos, accumulators, &caches->big);
+    auto [psqt_coeff, pos_coeff] = get_dynamic_coeffs(pos, psqt, positional);
+    
+    // Show dynamic coefficients and their deviation from base
+    ss << "Dynamic coefficients   PSQT: " << psqt_coeff << " (" 
+       << std::showpos << (psqt_coeff - 125) << "), Positional: " << pos_coeff 
+       << " (" << (pos_coeff - 131) << ")" << std::noshowpos << '\n';
+    
     Value v                 = psqt + positional;
     v                       = pos.side_to_move() == WHITE ? v : -v;
     ss << "NNUE evaluation        " << 0.01 * UCIEngine::to_cp(v, pos) << " (white side)\n";
@@ -115,7 +186,7 @@ std::string Eval::trace(Position& pos, const Eval::NNUE::Networks& networks) {
     v = evaluate(networks, pos, accumulators, *caches, VALUE_ZERO);
     v = pos.side_to_move() == WHITE ? v : -v;
     ss << "Final evaluation       " << 0.01 * UCIEngine::to_cp(v, pos) << " (white side)";
-    ss << " [with scaled NNUE, ...]";
+    ss << " [with weighted influence coefficients]";
     ss << "\n";
 
     return ss.str();
