@@ -782,23 +782,22 @@ Value Search::Worker::search(
         && (ttData.bound & (ttData.value >= beta ? BOUND_LOWER : BOUND_UPPER))
         && (cutNode == (ttData.value >= beta) || depth > 5))
     {
-        // If ttMove is quiet, update move sorting heuristics on TT hit
-        if (ttData.move && ttData.value >= beta)
-        {
-            // Bonus for a quiet ttMove that fails high
-            if (!ttCapture)
-                update_quiet_histories(pos, ss, *this, ttData.move,
-                                       std::min(119 * depth - 74, 855));
+        auto update_tt_failhigh_histories = [&]() {
+            if (ttData.move && ttData.value >= beta)
+            {
+                if (!ttCapture)
+                    update_quiet_histories(pos, ss, *this, ttData.move,
+                                           std::min(119 * depth - 74, 855));
 
-            // Extra penalty for early quiet moves of the previous ply
-            if (prevSq != SQ_NONE && (ss - 1)->moveCount < 4 && !priorCapture)
-                update_continuation_histories(ss - 1, pos.piece_on(prevSq), prevSq, -2014);
-        }
+                if (prevSq != SQ_NONE && (ss - 1)->moveCount < 4 && !priorCapture)
+                    update_continuation_histories(ss - 1, pos.piece_on(prevSq), prevSq, -2014);
+            }
+        };
 
-        // Partial workaround for the graph history interaction problem
-        // For high rule50 counts don't produce transposition table cutoffs.
         if (pos.rule50_count() < 96)
         {
+            // Partial workaround for the graph history interaction problem
+            // For high rule50 counts don't produce transposition table cutoffs.
             if (depth >= 7 && ttData.move && pos.pseudo_legal(ttData.move) && pos.legal(ttData.move)
                 && !is_decisive(ttData.value))
             {
@@ -809,13 +808,22 @@ Value Search::Worker::search(
 
                 // Check that the ttValue after the tt move would also trigger a cutoff
                 if (!is_valid(ttDataNext.value))
+                {
+                    update_tt_failhigh_histories();
                     return ttData.value;
+                }
 
                 if ((ttData.value >= beta) == (-ttDataNext.value >= beta))
+                {
+                    update_tt_failhigh_histories();
                     return ttData.value;
+                }
             }
             else
+            {
+                update_tt_failhigh_histories();
                 return ttData.value;
+            }
         }
     }
 
