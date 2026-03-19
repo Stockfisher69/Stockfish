@@ -59,6 +59,7 @@ struct TTEntry {
     void save(Key k, Value v, bool pv, Bound b, Depth d, Move m, Value ev, uint8_t generation8);
     // The returned age is a multiple of TranspositionTable::GENERATION_DELTA
     uint8_t relative_age(const uint8_t generation8) const;
+    int     replace_value(const uint8_t generation8) const;
 
    private:
     friend class TranspositionTable;
@@ -120,6 +121,11 @@ uint8_t TTEntry::relative_age(const uint8_t generation8) const {
     // the result) to calculate the entry age correctly even after
     // generation8 overflows into the next cycle.
     return (GENERATION_CYCLE + generation8 - genBound8) & GENERATION_MASK;
+}
+
+int TTEntry::replace_value(const uint8_t generation8) const {
+    return depth8 - relative_age(generation8) + 2 * bool(genBound8 & 0x4)
+         + 4 * ((genBound8 & 0x3) == BOUND_EXACT);
 }
 
 
@@ -218,8 +224,8 @@ uint8_t TranspositionTable::generation() const { return generation8; }
 // table. It returns true if the position is found.
 // Otherwise, it returns false and a pointer to an empty or least valuable TTEntry
 // to be replaced later. The replace value of an entry is calculated as its depth
-// minus 8 times its relative age. TTEntry t1 is considered more valuable than
-// TTEntry t2 if its replace value is greater than that of t2.
+// adjusted by age, with bonuses for PV and exact entries. TTEntry t1 is considered
+// more valuable than TTEntry t2 if its replace value is greater than that of t2.
 std::tuple<bool, TTData, TTWriter> TranspositionTable::probe(const Key key) const {
 
     TTEntry* const tte   = first_entry(key);
@@ -234,8 +240,7 @@ std::tuple<bool, TTData, TTWriter> TranspositionTable::probe(const Key key) cons
     // Find an entry to be replaced according to the replacement strategy
     TTEntry* replace = tte;
     for (int i = 1; i < ClusterSize; ++i)
-        if (replace->depth8 - replace->relative_age(generation8)
-            > tte[i].depth8 - tte[i].relative_age(generation8))
+        if (replace->replace_value(generation8) > tte[i].replace_value(generation8))
             replace = &tte[i];
 
     return {false,
