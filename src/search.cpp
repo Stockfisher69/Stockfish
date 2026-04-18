@@ -1243,6 +1243,12 @@ moves_loop:  // When in check, search starts here
         if (allNode)
             r += r * 273 / (256 * depth + 260);
 
+        if (depth >= 4 && !ss->inCheck)
+        {
+            int evalDiff = std::abs(ss->staticEval - (ss - 2)->staticEval);
+            r -= std::min(evalDiff / 48, 200);
+        }
+
         // Step 17. Late moves reduction / extension (LMR)
         if (depth >= 2 && moveCount > 1)
         {
